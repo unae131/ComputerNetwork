@@ -1,12 +1,18 @@
 import java.io.*;
 import java.net.*;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.channels.SocketChannel;
+import java.nio.charset.Charset;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 
 public class Client {
     static InetAddress serverIP;
-
+    static SocketChannel commandChannel;
     static BufferedReader inFromUser;
-    static DataOutputStream outToServer;
-    static BufferedReader inFromServer;
+    static ByteBuffer byteBuffer;
+    final static Charset charset = Charset.forName("UTF-8");
 
     static void processResponse(String cmd, int statusCode, String phrase) throws IOException {
         // 에러 발생시
@@ -21,11 +27,12 @@ public class Client {
                 System.out.println(phrase.split(" ",3)[2]);
                 return;
             case "LIST":
-                String[] list = inFromServer.readLine().split(",");
+                String[] list = phrase.split("\n")[1].split(",");
 
-                for (int i = 0; i < list.length; i += 2) {
+                for (int i = 0; i < list.length ; i += 2) {
                     System.out.println(list[i] + "," + list[i + 1]);
                 }
+
                 return;
             case "GET":
                 String[] tmp = phrase.split(" ",5);
@@ -34,23 +41,93 @@ public class Client {
 
                 System.out.println("Received " + fileName + " / " + fileSize + " bytes");
 
-                Socket dataSocket = new Socket(serverIP, 2121);
+                SocketChannel dataChannel = SocketChannel.open();
+                dataChannel.configureBlocking(true);
+                dataChannel.connect(new InetSocketAddress(serverIP, 2121));
 
-                System.out.println("Test: dataSocket is connected");
+                FileChannel fileChannel = FileChannel.open(Paths.get(fileName), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+                ByteBuffer dataMessage, controlMessage, chunk;
+                byte seqNo;
+                short chkSum, msgSize;
 
-                BufferedReader inData = new BufferedReader(new InputStreamReader(dataSocket.getInputStream()));
-                // Msg format : {SeqNo(1byte), CHKsum(2bytes)}
+                while(dataChannel.read(dataMessage = ByteBuffer.allocate(1005)) > 0){
+                    // read message
+                    dataMessage.flip();
+                    seqNo = dataMessage.get();
+                    chkSum = dataMessage.getShort();
+                    /** do something **/
+                    msgSize = dataMessage.getShort();
+                    chunk = dataMessage.slice(5, msgSize);
+                    System.out.println(seqNo + " " + chkSum + " " + msgSize + " data message is received");
 
-                dataSocket.close();
+                    // write to file
+                    fileChannel.write(chunk);
+                    System.out.print("#");
+
+                    // send control message
+                    seqNo += 1;
+                    controlMessage = ByteBuffer.allocate(3);
+                    controlMessage.put(seqNo);
+                    controlMessage.putShort(chkSum);
+                    fileChannel.write(controlMessage);
+                    System.out.println("control message is sent");
+                }
+
+                System.out.println(" Completed...");
+                fileChannel.close();
+                dataChannel.close();
                 return;
+
             case "PUT":
                 tmp = phrase.split(" ",7);
-                System.out.println(tmp[3] + " transferred / " + tmp[6] + " bytes");
+                fileName = tmp[3];
+                fileSize = Long.parseLong(tmp[6]);
+                System.out.println(fileName + " transferred / " + tmp[6] + " bytes");
 
-                dataSocket = new Socket(serverIP, 2121);
+                dataChannel = SocketChannel.open();
+                dataChannel.configureBlocking(true);
+                dataChannel.connect(new InetSocketAddress(serverIP, 2121));
+
                 System.out.println("Test: dataSocket is connected");
-                /***/
-                dataSocket.close();
+
+                fileChannel = FileChannel.open(Paths.get(fileName), StandardOpenOption.READ);
+                seqNo = 1;
+                chkSum = 0;
+
+                do {
+                    dataMessage = ByteBuffer.allocate(1005);
+                    chunk = ByteBuffer.allocate(1000);
+                    controlMessage = ByteBuffer.allocate(3);
+
+                    if(fileSize != 0 && fileSize % 1000 == 0)
+                        msgSize = 1000;
+                    else
+                        msgSize = (short) (fileSize % 1000);
+
+                    // data message
+                    dataMessage.put(seqNo);
+                    dataMessage.putShort(chkSum);
+                    dataMessage.putShort(msgSize);
+                    fileChannel.read(chunk);
+                    dataMessage.put(chunk);
+
+                    // send message
+                    dataChannel.write(dataMessage);
+
+                    // read control msg
+                    dataChannel.read(controlMessage);
+                    controlMessage.flip();
+                    /** do something **/
+
+                    System.out.print("#");
+
+                    fileSize -= 1000;
+
+                } while (fileSize > 0);
+
+                System.out.println(" Completed...");
+                fileChannel.close();
+                dataChannel.close();
                 return;
         }
     }
@@ -63,10 +140,9 @@ public class Client {
 
         inFromUser = new BufferedReader(new InputStreamReader(System.in));
 
-        Socket commandSocket = new Socket(serverIP, 2020);
-
-        outToServer = new DataOutputStream(commandSocket.getOutputStream());
-        inFromServer = new BufferedReader(new InputStreamReader(commandSocket.getInputStream()));
+        commandChannel = SocketChannel.open();
+        commandChannel.configureBlocking(true);
+        commandChannel.connect(new InetSocketAddress(serverIP, 2020));
 
         while (true) {
             File file;
@@ -76,8 +152,7 @@ public class Client {
             // request
             // quit
             if (cmds[0].equals("QUIT")) {
-                commandSocket.close();
-                return;
+                break;
             }
             // put 관련
             else if (cmds[0].equals("PUT")) {
@@ -92,20 +167,28 @@ public class Client {
                     continue;
                 }
 
-                outToServer.writeBytes(request + '\n' + file.length() + '\n');
+                byteBuffer = charset.encode(request + '\n' + file.length());
+                commandChannel.write(byteBuffer);
             }
             // 그 외 명령어
             else {
-                outToServer.writeBytes(request + '\n');
+                byteBuffer = charset.encode(request);
+                commandChannel.write(byteBuffer);
             }
 
             // read response
-            response = inFromServer.readLine();
+            /***/byteBuffer = ByteBuffer.allocate(10000);
+            commandChannel.read(byteBuffer);
+            byteBuffer.flip();
+
+            response = charset.decode((byteBuffer)).toString();
             parsedResponse = response.split(" ", 2);
 
             processResponse(cmds[0], Integer.parseInt(parsedResponse[0]), parsedResponse[1]);
 
         }
 
+        inFromUser.close();
+        commandChannel.close();
     }
 }

@@ -1,14 +1,19 @@
 import java.io.*;
 import java.net.*;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+import java.nio.charset.Charset;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 
 public class Server {
     final static String basePath = Paths.get("").toAbsolutePath().toString();
     static String curPath = basePath;
-    static BufferedReader inFromClient;
-    static DataOutputStream outToClient;
 
+    static File file;
     static long fileSize;
 
     static String statusCode(int code) {
@@ -18,13 +23,13 @@ public class Server {
                 phrase = "Moved to " + curPath;
                 break;
             case 201: // 성공적인 list
-                phrase = "Comprising " + fileSize + " entries";
+                phrase = "Comprising " + file.listFiles().length + " entries";
                 break;
             case 202: // 성공적인 get. 보낼 준비 되었다.
-                phrase = "Containing " + fileSize + " bytes in ";
+                phrase = "Containing " + file.length() + " bytes in " + file.getName();
                 break;
             case 203: // put할 준비 되었다.
-                phrase = "Ready to receive " + fileSize + " bytes in ";
+                phrase = "Ready to receive " + fileSize + " bytes in " + file.getName();
                 break;
             case 400: // 그런 file,dir 없다
                 phrase = "No such file/directory exists";
@@ -50,9 +55,9 @@ public class Server {
         }
         return code + (code >= 400 ? " Failed -" : "") + " " + phrase;
     }
+
     static String processCommand(String cmd, String arg) throws IOException {
         Path argPath;
-        File file;
 
         // "CD"를 제외하곤, arg가 없는 것을 허용하지 않는다.
         if (arg == null && cmd.equals("CD")) {
@@ -89,7 +94,6 @@ public class Server {
                 }
 
                 File[] files = file.listFiles();
-                fileSize = files.length; // number of files in the dir
 
                 String response = "\n";
                 for (File f : files) {
@@ -102,27 +106,110 @@ public class Server {
                 if (file.isDirectory()) {
                     return statusCode(402);
                 }
-                fileSize = file.length();
-                return statusCode(202) + file.getName();
+                return statusCode(202);
 
             case "PUT":
                 if (file.isDirectory()) {
                     return statusCode(402);
                 }
                 // /dir/file 이런식으로 주어졌을 경우
-                if (!file.getParentFile().exists()){
+                if (!file.getParentFile().exists()) {
                     return statusCode(403);
                 }
-                fileSize = Long.parseLong(inFromClient.readLine());
+                fileSize = Long.parseLong(arg.split("\n")[1]);
                 System.out.println("Request: " + fileSize);
-                return statusCode(203) + file.getName();
+                return statusCode(203);
 
             default:
                 return statusCode(501);
         }
     }
 
-    static void processData(String cmd){
+    static void processData(String cmd) throws IOException {
+        ServerSocketChannel dataSSC = ServerSocketChannel.open();
+        dataSSC.configureBlocking(true);
+        dataSSC.bind(new InetSocketAddress(2121));
+
+        SocketChannel dataChannel = dataSSC.accept();
+        FileChannel fileChannel;
+
+        // {SeqNo(1byte), CHKsum(2bytes), Size(2byte), 데이터청크(1000bytes)}
+        // {SeqNo(1byte), CHKsum(2bytes)}
+        ByteBuffer dataMessage, controlMessage, chunk;
+
+        byte seqNo;
+        short chkSum, msgSize;
+        long fileSize;
+
+        switch (cmd) {
+            case "GET":
+                fileChannel = FileChannel.open(file.toPath(), StandardOpenOption.READ);
+                seqNo = 1;
+                chkSum = 0;
+                fileSize = file.length();
+
+                do {
+                    dataMessage = ByteBuffer.allocate(1005);
+                    chunk = ByteBuffer.allocate(1000);
+                    controlMessage = ByteBuffer.allocate(3);
+
+                    if(fileSize != 0 && fileSize % 1000 == 0)
+                        msgSize = 1000;
+                    else
+                        msgSize = (short) (fileSize % 1000);
+
+                    // data message
+                    dataMessage.put(seqNo);
+                    dataMessage.putShort(chkSum);
+                    dataMessage.putShort(msgSize);
+                    fileChannel.read(chunk);
+//                    chunk.flip();
+                    dataMessage.put(chunk);
+
+                    // send message
+                    dataChannel.write(dataMessage);
+                    System.out.println("data message is sent");
+
+                    // read control msg
+                    dataChannel.read(controlMessage);
+                    controlMessage.flip();
+                    System.out.println("control message is received");
+
+                    /** do something **/
+
+                    fileSize -= 1000;
+
+                } while (fileSize > 0);
+                fileChannel.close();
+                break;
+
+            case "PUT":
+                fileChannel = FileChannel.open(file.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+
+                while (dataChannel.read(dataMessage = ByteBuffer.allocate(1005)) > 0) {
+                    // read message
+                    dataMessage.flip();
+                    seqNo = dataMessage.get();
+                    chkSum = dataMessage.getShort();
+                    /** do something **/
+                    msgSize = dataMessage.getShort();
+                    chunk = dataMessage.slice(5, msgSize);
+
+                    // write to file
+                    fileChannel.write(chunk);
+
+                    // send control message
+                    seqNo += 1;
+                    controlMessage = ByteBuffer.allocate(3);
+                    controlMessage.put(seqNo);
+                    controlMessage.putShort(chkSum);
+                    fileChannel.write(controlMessage);
+                }
+                fileChannel.close();
+        }
+
+        dataChannel.close();
+        dataSSC.close();
 
     }
 
@@ -130,31 +217,41 @@ public class Server {
         String inputString, outputString;
         String[] input;
 
-        ServerSocket welcomeSocket = new ServerSocket(2020);
-        ServerSocket welcomeDataSocket = new ServerSocket(2121);
-        Socket commandSocket;
+        ServerSocketChannel serverSC = ServerSocketChannel.open();
+        serverSC.configureBlocking(true);
+        serverSC.bind(new InetSocketAddress(2020));
 
         while (true) {
-            commandSocket = welcomeSocket.accept();
+            SocketChannel commandChannel = serverSC.accept();
             curPath = basePath;
 
-            inFromClient = new BufferedReader(new InputStreamReader(commandSocket.getInputStream()));
-            outToClient = new DataOutputStream(commandSocket.getOutputStream());
+            Charset charset = Charset.forName("UTF-8");
+            ByteBuffer byteBuffer;
 
             while (true) {
-                inputString = inFromClient.readLine();
+                // read from Client
+                /***/byteBuffer = ByteBuffer.allocate(1000);
+
+                commandChannel.read(byteBuffer);
+
+                byteBuffer.flip();
+
+                inputString = charset.decode(byteBuffer).toString();
                 System.out.println("Request: " + inputString);
 
                 input = inputString.split(" ", 2);
                 outputString = processCommand(input[0], input.length > 1 ? input[1] : null);
 
-                outToClient.writeBytes(outputString + "\n");
-                System.out.println("Response: " + outputString);
+                // write to Client
+                byteBuffer = charset.encode(outputString);
+                commandChannel.write(byteBuffer);
+                for (String o : outputString.split("\n"))
+                    System.out.println("Response: " + o);
 
-                if((input[0].equals("GET"))
-                        && Integer.parseInt(outputString.split(" ")[0]) < 400){
-                    Socket dataSocket = welcomeDataSocket.accept();
-
+                // process data (get, put)
+                if ((input[0].equals("GET") || input[0].equals("PUT"))
+                        && Integer.parseInt(outputString.split(" ")[0]) < 400) {
+                    processData(input[0]);
                 }
             }
         }
