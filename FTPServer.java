@@ -9,9 +9,10 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 
-public class Server {
+public class FTPServer {
     final static String basePath = Paths.get("").toAbsolutePath().toString();
     static String curPath = basePath;
+    static int cmdPort = 2020, dataPort = 2121;
 
     static File file;
     static long fileSize;
@@ -64,6 +65,8 @@ public class Server {
             return statusCode(200);
         } else if (arg == null) {
             return statusCode(500);
+        } else if (cmd.equals("PUT")) {
+            argPath = Paths.get(arg.split("\n")[0]);
         } else {
             argPath = Paths.get(arg);
         }
@@ -117,7 +120,6 @@ public class Server {
                     return statusCode(403);
                 }
                 fileSize = Long.parseLong(arg.split("\n")[1]);
-                System.out.println("Request: " + fileSize);
                 return statusCode(203);
 
             default:
@@ -128,7 +130,7 @@ public class Server {
     static void processData(String cmd) throws IOException {
         ServerSocketChannel dataSSC = ServerSocketChannel.open();
         dataSSC.configureBlocking(true);
-        dataSSC.bind(new InetSocketAddress(2121));
+        dataSSC.bind(new InetSocketAddress(dataPort));
 
         SocketChannel dataChannel = dataSSC.accept();
         FileChannel fileChannel;
@@ -136,75 +138,78 @@ public class Server {
         // {SeqNo(1byte), CHKsum(2bytes), Size(2byte), 데이터청크(1000bytes)}
         // {SeqNo(1byte), CHKsum(2bytes)}
         ByteBuffer dataMessage, controlMessage, chunk;
+        dataMessage = ByteBuffer.allocate(1005);
+        controlMessage = ByteBuffer.allocate(3);
 
         byte seqNo;
         short chkSum, msgSize;
-        long fileSize;
 
         switch (cmd) {
             case "GET":
                 fileChannel = FileChannel.open(file.toPath(), StandardOpenOption.READ);
                 seqNo = 1;
                 chkSum = 0;
-                fileSize = file.length();
 
-                do {
-                    dataMessage = ByteBuffer.allocate(1005);
-                    chunk = ByteBuffer.allocate(1000);
-                    controlMessage = ByteBuffer.allocate(3);
+                chunk = ByteBuffer.allocate(1000);
 
-                    if(fileSize != 0 && fileSize % 1000 == 0)
-                        msgSize = 1000;
-                    else
-                        msgSize = (short) (fileSize % 1000);
-
-                    // data message
+                while ((msgSize = (short) fileChannel.read(chunk)) != -1) {
+                    // write data message to buffer
                     dataMessage.put(seqNo);
                     dataMessage.putShort(chkSum);
                     dataMessage.putShort(msgSize);
-                    fileChannel.read(chunk);
-//                    chunk.flip();
+
+                    chunk.flip();
                     dataMessage.put(chunk);
+                    chunk.clear();
 
                     // send message
+                    dataMessage.flip();
                     dataChannel.write(dataMessage);
-                    System.out.println("data message is sent");
+                    dataMessage.clear();
+//                    System.out.println("data message is sent");
 
                     // read control msg
                     dataChannel.read(controlMessage);
                     controlMessage.flip();
-                    System.out.println("control message is received");
+//                    System.out.println("control message is received");
 
                     /** do something **/
+//                    seqNo = controlMessage.get();
+//                    chkSum = controlMessage.getShort();
+                    controlMessage.clear();
 
-                    fileSize -= 1000;
-
-                } while (fileSize > 0);
+                }
                 fileChannel.close();
                 break;
 
             case "PUT":
-                fileChannel = FileChannel.open(file.toPath(), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE);
+                fileChannel = FileChannel.open(file.toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
 
-                while (dataChannel.read(dataMessage = ByteBuffer.allocate(1005)) > 0) {
+                while (dataChannel.read(dataMessage) != -1) {
                     // read message
                     dataMessage.flip();
                     seqNo = dataMessage.get();
                     chkSum = dataMessage.getShort();
                     /** do something **/
+
                     msgSize = dataMessage.getShort();
-                    chunk = dataMessage.slice(5, msgSize);
+                    dataMessage.limit(dataMessage.position() + msgSize);
+//                    System.out.println(seqNo + " " + chkSum + " " + msgSize + " data message is received\n" + dataMessage);
 
                     // write to file
-                    fileChannel.write(chunk);
+                    fileChannel.write(dataMessage);
+                    dataMessage.clear();
 
                     // send control message
                     seqNo += 1;
-                    controlMessage = ByteBuffer.allocate(3);
                     controlMessage.put(seqNo);
                     controlMessage.putShort(chkSum);
-                    fileChannel.write(controlMessage);
+                    controlMessage.flip();
+                    dataChannel.write(controlMessage);
+                    controlMessage.clear();
+//                    System.out.println("control message is sent");
                 }
+
                 fileChannel.close();
         }
 
@@ -214,30 +219,51 @@ public class Server {
     }
 
     public static void main(String argv[]) throws Exception {
+        if (argv.length == 2) {
+            cmdPort = Integer.parseInt(argv[1]);
+            dataPort = Integer.parseInt(argv[2]);
+        } else if (argv.length > 0) {
+            System.out.println("Please enter 'FTPClient or FTPServer [control port number] [data port number]'\n(Default - control : 2020, data : 2121)");
+            return;
+        }
+
         String inputString, outputString;
         String[] input;
 
         ServerSocketChannel serverSC = ServerSocketChannel.open();
+        SocketChannel commandChannel;
         serverSC.configureBlocking(true);
-        serverSC.bind(new InetSocketAddress(2020));
+        serverSC.bind(new InetSocketAddress(cmdPort));
+
+        Charset charset = Charset.forName("UTF-8");
+        /***/ByteBuffer byteBuffer = ByteBuffer.allocate(1000);
 
         while (true) {
-            SocketChannel commandChannel = serverSC.accept();
+            commandChannel = serverSC.accept();
             curPath = basePath;
 
-            Charset charset = Charset.forName("UTF-8");
-            ByteBuffer byteBuffer;
+            if (commandChannel.isConnected())
+                System.out.println("Connected to " + commandChannel.getRemoteAddress() + " " + cmdPort + " " + dataPort);
+            else {
+                System.out.println("Failed connection");
+                commandChannel.close();
+                break;
+            }
 
             while (true) {
                 // read from Client
-                /***/byteBuffer = ByteBuffer.allocate(1000);
-
                 commandChannel.read(byteBuffer);
-
                 byteBuffer.flip();
 
                 inputString = charset.decode(byteBuffer).toString();
-                System.out.println("Request: " + inputString);
+                for (String i : inputString.split("\n"))
+                    System.out.println("Request: " + i);
+
+                // QUIT
+                if (inputString.equals("QUIT")) {
+                    System.out.println();
+                    break;
+                }
 
                 input = inputString.split(" ", 2);
                 outputString = processCommand(input[0], input.length > 1 ? input[1] : null);
@@ -245,6 +271,7 @@ public class Server {
                 // write to Client
                 byteBuffer = charset.encode(outputString);
                 commandChannel.write(byteBuffer);
+                byteBuffer.clear();
                 for (String o : outputString.split("\n"))
                     System.out.println("Response: " + o);
 
@@ -254,6 +281,8 @@ public class Server {
                     processData(input[0]);
                 }
             }
+            byteBuffer.clear();
+            commandChannel.close();
         }
     }
 }
