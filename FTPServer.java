@@ -60,7 +60,7 @@ public class FTPServer {
     static String processCommand(String cmd, String[] arg) throws IOException {
         Path argPath;
         // wrong command
-        if(!cmd.equals("CD") && !cmd.equals("LIST") && !cmd.equals("PUT") && !cmd.equals("GET"))
+        if (!cmd.equals("CD") && !cmd.equals("LIST") && !cmd.equals("PUT") && !cmd.equals("GET"))
             return statusCode(501);
 
         // arg is always needed, except "CD"
@@ -72,7 +72,9 @@ public class FTPServer {
             argPath = Paths.get(arg[0]);
 
         // make a File
-        if (argPath.isAbsolute())
+        if (cmd.equals("PUT"))
+            file = new File(curPath, argPath.getFileName().toString());
+        else if (argPath.isAbsolute())
             file = new File(argPath.toString());
         else
             file = new File(curPath, argPath.toString());
@@ -238,55 +240,54 @@ public class FTPServer {
                 // read requests in bytes from Client
                 try {
                     commandChannel.read(inBuffer);
-                }
-                catch (Exception e){
+
+                    inBuffer.flip();
+
+                    // bytes to string
+                    inputString = charset.decode(inBuffer).toString();
+                    inBuffer.clear();
+
+                    // print requests in server's screen
+                    for (String i : inputString.split("\n"))
+                        System.out.println("Request: " + i);
+
+                    // QUIT
+                    if (inputString.equals("QUIT")) {
+                        System.out.println();
+                        break;
+                    }
+
+                    // process request
+                    String[] tmp = inputString.split(" ", 2);
+                    String cmd = tmp[0];
+                    String[] arg = tmp.length > 1 ? tmp[1].split("\n") : null;
+
+                    outputString = processCommand(cmd, arg);
+
+                    // send response size with response to Client
+                    ByteBuffer tmpBuff = charset.encode(outputString);
+                    int size = tmpBuff.capacity();
+
+                    outBuffer = ByteBuffer.allocate(size + 4);
+                    outBuffer.putInt(size);
+                    outBuffer.put(tmpBuff);
+
+                    outBuffer.flip();
+                    commandChannel.write(outBuffer);
+                    outBuffer.clear();
+
+                    // print response in server's screen
+                    for (String o : outputString.split("\n"))
+                        System.out.println("Response: " + o);
+
+                    // process data (get, put)
+                    if ((cmd.equals("GET") || cmd.equals("PUT"))
+                            && Integer.parseInt(outputString.split(" ")[0]) < 400)
+                        processData(cmd);
+
+                } catch (Exception e) {
                     e.printStackTrace();
                     break;
-                }
-
-                inBuffer.flip();
-
-                // bytes to string
-                inputString = charset.decode(inBuffer).toString();
-                inBuffer.clear();
-
-                // print requests in server's screen
-                for (String i : inputString.split("\n"))
-                    System.out.println("Request: " + i);
-
-                // QUIT
-                if (inputString.equals("QUIT")) {
-                    System.out.println();
-                    break;
-                }
-
-                // process request
-                String[] tmp = inputString.split(" ", 2);
-                String cmd = tmp[0];
-                String[] arg = tmp.length > 1 ? tmp[1].split("\n") : null;
-
-                outputString = processCommand(cmd, arg);
-
-                // send response size with response to Client
-                ByteBuffer tmpBuff = charset.encode(outputString);
-                int size = tmpBuff.capacity();
-
-                outBuffer = ByteBuffer.allocate(size+4);
-                outBuffer.putInt(size);
-                outBuffer.put(tmpBuff);
-
-                outBuffer.flip();
-                commandChannel.write(outBuffer);
-                outBuffer.clear();
-
-                // print response in server's screen
-                for (String o : outputString.split("\n"))
-                    System.out.println("Response: " + o);
-
-                // process data (get, put)
-                if ((cmd.equals("GET") || cmd.equals("PUT"))
-                        && Integer.parseInt(outputString.split(" ")[0]) < 400) {
-                    processData(cmd);
                 }
             }
             commandChannel.close();

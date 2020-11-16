@@ -11,6 +11,7 @@ import java.nio.file.StandardOpenOption;
 public class FTPClient {
     static InetAddress serverIP;
     static int cmdPort = 2020, dataPort = 2121;
+    static String putFilePath;
 
     static void processResponse(String cmd, int statusCode, String phrase) throws IOException {
         // error
@@ -94,7 +95,7 @@ public class FTPClient {
                 dataChannel.connect(new InetSocketAddress(serverIP, dataPort));
 
                 // open file channel
-                fileChannel = FileChannel.open(Paths.get(fileName), StandardOpenOption.READ);
+                fileChannel = FileChannel.open(Paths.get(putFilePath), StandardOpenOption.READ);
                 System.out.println(fileName + " transferred / " + fileSize + " bytes");
 
                 dataMessage = ByteBuffer.allocate(1005);
@@ -187,7 +188,7 @@ public class FTPClient {
                     System.out.println("Such file does not exist!");
                     continue;
                 }
-
+                putFilePath = file.getCanonicalPath();
                 requestBuffer = charset.encode(request + "\n" + file.length() + "\n");
                 commandChannel.write(requestBuffer);
             } else { // other commands
