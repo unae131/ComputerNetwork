@@ -45,7 +45,7 @@ public class FTPServer {
                 phrase = "It's not a file";
                 break;
             case 500:
-                phrase = "An argument(File/Directory name) is needed";
+                phrase = "Enter (CD <dir>, LIST [dir], GET [file], PUT [file], QUIT)";
                 break;
             case 501:
                 phrase = "Wrong command";
@@ -59,6 +59,9 @@ public class FTPServer {
 
     static String processCommand(String cmd, String[] arg) throws IOException {
         Path argPath;
+        // wrong command
+        if(!cmd.equals("CD") && !cmd.equals("LIST") && !cmd.equals("PUT") && !cmd.equals("GET"))
+            return statusCode(501);
 
         // arg is always needed, except "CD"
         if (arg == null && cmd.equals("CD"))
@@ -218,7 +221,7 @@ public class FTPServer {
         String inputString, outputString;
 
         while (true) {
-            System.out.println("...Waiting for a client in port " + cmdPort);
+            System.out.println("\n...Waiting for a client in port " + cmdPort);
 
             SocketChannel commandChannel = serverSC.accept();
             if (commandChannel == null) {
@@ -233,7 +236,14 @@ public class FTPServer {
             inBuffer = ByteBuffer.allocate(500);
             while (true) {
                 // read requests in bytes from Client
-                commandChannel.read(inBuffer);
+                try {
+                    commandChannel.read(inBuffer);
+                }
+                catch (Exception e){
+                    e.printStackTrace();
+                    break;
+                }
+
                 inBuffer.flip();
 
                 // bytes to string

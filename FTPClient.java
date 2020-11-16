@@ -158,7 +158,7 @@ public class FTPClient {
         commandChannel.connect(new InetSocketAddress(serverIP, cmdPort));
 
         if (commandChannel.isConnected())
-            System.out.println("Control channel... Connected to " + serverIP.getHostAddress() + " " + cmdPort
+            System.out.println("Control channel is connected to " + serverIP.getHostAddress() + " " + cmdPort
                     + "\nEnter commands (CD <dir>, LIST [dir], GET [file], PUT [file], QUIT)");
         else {
             System.out.println("Failed connection");
@@ -194,7 +194,7 @@ public class FTPClient {
                 requestBuffer = charset.encode(request);
                 commandChannel.write(requestBuffer);
                 // quit
-                if (cmds[0].equals("QUIT")) {
+                if (request.equals("QUIT")) {
                     break;
                 }
             }
