@@ -11,7 +11,7 @@ import java.nio.file.StandardOpenOption;
 
 public class FTPServer {
     final static String basePath = Paths.get("").toAbsolutePath().toString();
-    static String curPath = basePath;
+    static String curPath;
     static int cmdPort = 2020, dataPort = 2121;
 
     static File file;
@@ -20,37 +20,39 @@ public class FTPServer {
     static String statusCode(int code) {
         String phrase;
         switch (code) {
-            case 200: // 성공적인 cd
+            // success
+            case 200: // cd
                 phrase = "Moved to " + curPath;
                 break;
-            case 201: // 성공적인 list
+            case 201: // list
                 phrase = "Comprising " + file.listFiles().length + " entries";
                 break;
-            case 202: // 성공적인 get. 보낼 준비 되었다.
+            case 202: // get
                 phrase = "Containing " + file.length() + " bytes in " + file.getName();
                 break;
-            case 203: // put할 준비 되었다.
+            case 203: // put
                 phrase = "Ready to receive " + fileSize + " bytes in " + file.getName();
                 break;
-            case 400: // 그런 file,dir 없다
+            // error
+            case 400:
                 phrase = "No such file/directory exists";
                 break;
-            case 401: // cd,list에서 이건 dir이 아니다
+            case 401:
                 phrase = "It's not a directory";
                 break;
-            case 402: // get, put에서 이건 file이 아니다
+            case 402:
                 phrase = "It's not a file";
                 break;
-            case 403: // put에서 인자에 주어진 파일의 상위 디렉토리가 존재하지 않는다.
+            case 403:
                 phrase = "Parent directory doesn't exist";
                 break;
-            case 500: // arg가 부족하다
-                phrase = "File/Directory name is needed";
+            case 500:
+                phrase = "An argument(File/Directory name) is needed";
                 break;
-            case 501: // wrong cmd;
+            case 501:
                 phrase = "Wrong command";
                 break;
-            default: // unknown reason
+            default:
                 code = 502;
                 phrase = "Unknown reason";
         }
@@ -60,7 +62,7 @@ public class FTPServer {
     static String processCommand(String cmd, String arg) throws IOException {
         Path argPath;
 
-        // "CD"를 제외하곤, arg가 없는 것을 허용하지 않는다.
+        // arg is always needed, except "CD"
         if (arg == null && cmd.equals("CD")) {
             return statusCode(200);
         } else if (arg == null) {
@@ -72,13 +74,13 @@ public class FTPServer {
         }
 
         // check that it's an absolute path
-        if (argPath.isAbsolute()) { // absolute
+        if (argPath.isAbsolute()) {
             file = new File(argPath.toString());
-        } else { // non-absolute
+        } else {
             file = new File(curPath, argPath.toString());
         }
 
-        // "PUT"을 제외하곤, 존재하는 file, dir이어야 한다.
+        // file/dir should exist, except "PUT"
         if (!cmd.equals("PUT") && !file.exists()) {
             return statusCode(400);
         }
@@ -115,7 +117,7 @@ public class FTPServer {
                 if (file.isDirectory()) {
                     return statusCode(402);
                 }
-                // /dir/file 이런식으로 주어졌을 경우
+                // given in path like "/dir/file"
                 if (!file.getParentFile().exists()) {
                     return statusCode(403);
                 }
@@ -135,8 +137,11 @@ public class FTPServer {
         SocketChannel dataChannel = dataSSC.accept();
         FileChannel fileChannel;
 
-        // {SeqNo(1byte), CHKsum(2bytes), Size(2byte), 데이터청크(1000bytes)}
-        // {SeqNo(1byte), CHKsum(2bytes)}
+        /**
+         * {SeqNo(1byte), CHKsum(2bytes), Size(2byte), data chunk(1000bytes)}
+         * {SeqNo(1byte), CHKsum(2bytes)}
+         */
+
         ByteBuffer dataMessage, controlMessage, chunk;
         dataMessage = ByteBuffer.allocate(1005);
         controlMessage = ByteBuffer.allocate(3);
@@ -218,37 +223,41 @@ public class FTPServer {
 
     }
 
-    public static void main(String argv[]) throws Exception {
+    public static void main(String[] argv) throws Exception {
+
         if (argv.length == 2) {
-            cmdPort = Integer.parseInt(argv[1]);
-            dataPort = Integer.parseInt(argv[2]);
+            cmdPort = Integer.parseInt(argv[0]);
+            dataPort = Integer.parseInt(argv[1]);
         } else if (argv.length > 0) {
-            System.out.println("Please enter 'FTPClient or FTPServer [control port number] [data port number]'\n(Default - control : 2020, data : 2121)");
+            System.out.println("Enter just 'FTPServer' to open control channel, data channel in port 2020, 2121.\n" +
+                    "Or enter 'FTPServer [control port no] [data port no]'");
             return;
         }
 
-        String inputString, outputString;
-        String[] input;
-
         ServerSocketChannel serverSC = ServerSocketChannel.open();
         SocketChannel commandChannel;
+        
         serverSC.configureBlocking(true);
         serverSC.bind(new InetSocketAddress(cmdPort));
 
         Charset charset = Charset.forName("UTF-8");
         /***/ByteBuffer byteBuffer = ByteBuffer.allocate(1000);
 
-        while (true) {
-            commandChannel = serverSC.accept();
-            curPath = basePath;
+        String inputString, outputString;
+        String[] input;
 
-            if (commandChannel.isConnected())
-                System.out.println("Connected to " + commandChannel.getRemoteAddress() + " " + cmdPort + " " + dataPort);
-            else {
+        while (true) {
+            System.out.println("...Waiting for a client in port " + cmdPort);
+
+            if ((commandChannel = serverSC.accept()) == null) {
                 System.out.println("Failed connection");
-                commandChannel.close();
                 break;
             }
+
+            System.out.println("Connected to " + commandChannel.getRemoteAddress());
+
+            // init server directory
+            curPath = basePath;
 
             while (true) {
                 // read from Client
@@ -284,5 +293,6 @@ public class FTPServer {
             byteBuffer.clear();
             commandChannel.close();
         }
+        serverSC.close();
     }
 }

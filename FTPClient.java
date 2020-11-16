@@ -16,13 +16,13 @@ public class FTPClient {
     final static Charset charset = Charset.forName("UTF-8");
 
     static void processResponse(String cmd, int statusCode, String phrase) throws IOException {
-        // 에러 발생시
+        // error
         if (statusCode >= 400) {
             System.out.println(phrase);
             return;
         }
 
-        // 성공적으로 수행시
+        // success
         switch (cmd) {
             case "CD":
                 System.out.println(phrase.split(" ", 3)[2]);
@@ -138,10 +138,11 @@ public class FTPClient {
     }
 
     public static void main(String argv[]) throws Exception {
+        System.out.println(argv.length);
         if (argv.length == 0)
             serverIP = InetAddress.getByName("127.0.0.1");
         else if (argv.length >= 1) {
-            serverIP = InetAddress.getByName(argv[1]);
+            serverIP = InetAddress.getByName(argv[3]);
 
             if (argv.length == 3) {
                 cmdPort = Integer.parseInt(argv[1]);
@@ -176,7 +177,7 @@ public class FTPClient {
             String[] cmds = request.split(" ", 2);
 
             // request
-            // put 관련
+            // put
             if (cmds[0].equals("PUT")) {
                 if (cmds.length < 2) {
                     System.out.println("Please enter \"PUT [fileName]\"");
@@ -192,7 +193,7 @@ public class FTPClient {
                 byteBuffer = charset.encode(request + '\n' + file.length());
                 commandChannel.write(byteBuffer);
             }
-            // 그 외 명령어
+            // other commands
             else {
                 byteBuffer = charset.encode(request);
                 commandChannel.write(byteBuffer);
