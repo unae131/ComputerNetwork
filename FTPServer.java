@@ -45,10 +45,10 @@ public class FTPServer {
                 phrase = "It's not a file";
                 break;
             case 500:
-                phrase = "Enter (CD <dir>, LIST [dir], GET [file], PUT [file], QUIT)";
+                phrase = "Wrong argument (CD <dir>, LIST [dir], GET [file], PUT [file], QUIT)";
                 break;
             case 501:
-                phrase = "Wrong command";
+                phrase = "Wrong command (CD <dir>, LIST [dir], GET [file], PUT [file], QUIT)";
                 break;
             default:
                 code = 502;

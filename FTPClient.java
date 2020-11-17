@@ -188,9 +188,16 @@ public class FTPClient {
                     System.out.println("Such file does not exist!");
                     continue;
                 }
+
+                if (file.isDirectory()) {
+                    System.out.println("It is a directory! You can only send a file.");
+                    continue;
+                }
+
                 putFilePath = file.getCanonicalPath();
                 requestBuffer = charset.encode(request + "\n" + file.length() + "\n");
                 commandChannel.write(requestBuffer);
+
             } else { // other commands
                 requestBuffer = charset.encode(request);
                 commandChannel.write(requestBuffer);
