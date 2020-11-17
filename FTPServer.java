@@ -282,8 +282,16 @@ public class FTPServer {
 
                     // process data (get, put)
                     if ((cmd.equals("GET") || cmd.equals("PUT"))
-                            && Integer.parseInt(outputString.split(" ")[0]) < 400)
-                        processData(cmd);
+                            && Integer.parseInt(outputString.split(" ")[0]) < 400) {
+                        try {
+
+                            processData(cmd);
+
+                        } catch (BindException be) { // when can't use 2121
+                            System.out.println(dataPort + " port is being occupied. Trying to connect in " + ++dataPort);
+                            processData(cmd);
+                        }
+                    }
 
                 } catch (Exception e) {
                     e.printStackTrace();
