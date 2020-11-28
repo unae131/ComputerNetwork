@@ -1,5 +1,4 @@
 import java.io.*;
-import java.lang.reflect.Array;
 import java.net.*;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -155,10 +154,10 @@ public class FTPServer {
                 phrase = "Drop server packets";
                 break;
             case 205: // SERVER TIMEOUT
-                phrase = "Drop server packets";
+                phrase = "Time out server packets";
                 break;
             case 206: // SERVER BITERROR
-                phrase = "Drop server packets";
+                phrase = "Bit error server packets";
                 break;
             // error
             case 400:
