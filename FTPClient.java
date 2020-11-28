@@ -7,13 +7,17 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 
 public class FTPClient {
     static InetAddress serverIP;
     static int cmdPort = 2020, dataPort = 2121;
     static String putFilePath;
+    static ArrayList<Integer> DROP = new ArrayList<>();
+    static ArrayList<Integer> TIMEOUT = new ArrayList<>();
+    static ArrayList<Integer> BITERROR = new ArrayList<>();
 
-    static void processResponse(String cmd, int statusCode, String phrase) throws IOException {
+    static void processResponse(String cmd, int statusCode, String phrase) throws Exception {
         // error
         if (statusCode >= 400) {
             System.out.println(phrase);
@@ -46,40 +50,13 @@ public class FTPClient {
 
                 // create new file
                 FileChannel fileChannel = FileChannel.open(Paths.get(fileName),
-                        StandardOpenOption.CREATE, StandardOpenOption.WRITE);
+                        StandardOpenOption.CREATE, StandardOpenOption.WRITE,
+                        StandardOpenOption.TRUNCATE_EXISTING);
                 System.out.println("Received " + fileName + " / " + fileSize + " bytes");
 
-                ByteBuffer dataMessage = ByteBuffer.allocate(1005);
-                ByteBuffer controlMessage = ByteBuffer.allocate(3);
-                byte seqNo;
-                short chkSum, msgSize;
+                FTPServer.receiveData(dataChannel, fileChannel);
 
-                while (dataChannel.read(dataMessage) != -1) {
-                    // read message
-                    dataMessage.flip();
-                    seqNo = dataMessage.get();
-                    chkSum = dataMessage.getShort();
-                    /* do something */
-
-                    msgSize = dataMessage.getShort();
-                    dataMessage.limit(dataMessage.position() + msgSize);
-
-                    // write to file
-                    fileChannel.write(dataMessage);
-                    System.out.print("#");
-                    dataMessage.clear();
-
-                    // send control message
-                    seqNo += 1;
-                    controlMessage.put(seqNo);
-                    controlMessage.putShort(chkSum);
-                    controlMessage.flip();
-                    dataChannel.write(controlMessage);
-                    controlMessage.clear();
-//                    System.out.println("control message is sent");
-                }
-
-                System.out.println(" Completed...");
+                System.out.println("Completed...");
                 fileChannel.close();
                 dataChannel.close();
                 return;
@@ -98,47 +75,19 @@ public class FTPClient {
                 fileChannel = FileChannel.open(Paths.get(putFilePath), StandardOpenOption.READ);
                 System.out.println(fileName + " transferred / " + fileSize + " bytes");
 
-                dataMessage = ByteBuffer.allocate(1005);
-                controlMessage = ByteBuffer.allocate(3);
-                ByteBuffer chunk = ByteBuffer.allocate(1000);
-                seqNo = 1;
-                chkSum = 0;
+                FTPServer.sendData(dataChannel, fileChannel, DROP, TIMEOUT, BITERROR);
 
-                while ((msgSize = (short) fileChannel.read(chunk)) != -1) {
-                    // write data message to buffer
-                    dataMessage.put(seqNo);
-                    dataMessage.putShort(chkSum);
-                    dataMessage.putShort(msgSize);
+                DROP.clear();
+                TIMEOUT.clear();
+                BITERROR.clear();
 
-                    chunk.flip();
-                    dataMessage.put(chunk);
-                    chunk.clear();
-
-                    // send message
-                    dataMessage.flip();
-                    dataChannel.write(dataMessage);
-                    dataMessage.clear();
-                    System.out.print("#");
-
-                    // read control msg
-                    dataChannel.read(controlMessage);
-                    controlMessage.flip();
-
-                    /* do something */
-//                    seqNo = controlMessage.get();
-//                    chkSum = controlMessage.getShort();
-                    controlMessage.clear();
-
-                }
-
-                System.out.println(" Completed...");
+                System.out.println("\nCompleted...");
                 fileChannel.close();
                 dataChannel.close();
         }
     }
 
     public static void main(String[] argv) throws Exception {
-
         if (argv.length == 0)
             serverIP = InetAddress.getByName("127.0.0.1");
         else {
@@ -160,7 +109,8 @@ public class FTPClient {
 
         if (commandChannel.isConnected())
             System.out.println("Control channel is connected to " + serverIP.getHostAddress() + " " + cmdPort
-                    + "\nEnter commands (CD <dir>, LIST [dir], GET [file], PUT [file], QUIT)");
+                    + "\nEnter commands (CD <dir>, LIST [dir], GET [file], PUT [file], QUIT)" +
+                    "\nPacket control commands (DROP, TIMEOUT, BITERROR, SERVER DROP, SERVER TIMEOUT, SERVER BITERROR)");
         else {
             System.out.println("Failed connection");
             commandChannel.close();
@@ -198,12 +148,32 @@ public class FTPClient {
                 requestBuffer = charset.encode(request + "\n" + file.length() + "\n");
                 commandChannel.write(requestBuffer);
 
+            } else if (cmds[0].equals("DROP")) {
+                String[] args = cmds[1].split(",");
+                for (String arg : args) {
+                    DROP.add(Integer.parseInt(arg.trim().substring(1)));
+                }
+                continue;
+            } else if (cmds[0].equals("TIMEOUT")) {
+                String[] args = cmds[1].split(",");
+                for (String arg : args) {
+                    TIMEOUT.add(Integer.parseInt(arg.trim().substring(1)));
+                }
+                continue;
+            } else if (cmds[0].equals("BITERROR")) {
+                String[] args = cmds[1].split(",");
+                for (String arg : args) {
+                    BITERROR.add(Integer.parseInt(arg.trim().substring(1)));
+                }
+                continue;
             } else { // other commands
                 requestBuffer = charset.encode(request);
                 commandChannel.write(requestBuffer);
                 // quit
                 if (request.equals("QUIT")) {
-                    break;
+                    inFromUser.close();
+                    commandChannel.close();
+                    return;
                 }
             }
 
@@ -226,8 +196,5 @@ public class FTPClient {
 
             processResponse(cmds[0], Integer.parseInt(parsedResponse[0]), parsedResponse[1]);
         }
-
-        inFromUser.close();
-        commandChannel.close();
     }
 }
