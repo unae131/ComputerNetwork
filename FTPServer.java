@@ -1,10 +1,7 @@
 import java.io.*;
 import java.net.*;
 import java.nio.ByteBuffer;
-import java.nio.channels.AsynchronousCloseException;
-import java.nio.channels.FileChannel;
-import java.nio.channels.ServerSocketChannel;
-import java.nio.channels.SocketChannel;
+import java.nio.channels.*;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -34,7 +31,6 @@ public class FTPServer {
         boolean DROP;
         boolean TIMEOUT;
         boolean BITERROR;
-        boolean TIMEOUTACKED;
 
         Packet(SocketChannel dataChannel, byte seqNo, ByteBuffer dataMessage) {
             this.seqNo = seqNo;
@@ -49,25 +45,25 @@ public class FTPServer {
                     System.out.print(seqNo + " sent, ");
                     sendPacketAndStartTimer();
                 } else {
-//                    TIMEOUT = false;
+                    TIMEOUT = false;
                     Timer delayTimer = new Timer();
                     TimerTask delayTrans = new TimerTask() {
                         @Override
                         public void run() {
                             if (dataChannel.isConnected()) {
-                                System.out.println("\n(Delayed " + seqNo + " is actually sent)");
                                 sendPacketAndStartTimer();
+                                System.out.println("\n(Delayed " + seqNo + " is actually sent now)");
                             }
                         }
                     };
                     System.out.print(seqNo + " sent(Delay), ");
-                    delayTimer.schedule(delayTrans, 1001);
+                    delayTimer.schedule(delayTrans, 2000);
 
                     timerTask = new TimerTask() { // retransmit
                         @Override
                         public void run() {
-                            if (dataChannel.isConnected()) {
-                                System.out.println("\nDelayed " + seqNo + " time out & retransmitted");
+                            if (dataChannel.isConnected() && !acked) {
+                                System.out.println("\n" + seqNo + " time out & retransmitted");
                                 sendPacketAndStartTimer();
                             }
                         }
@@ -80,7 +76,7 @@ public class FTPServer {
                 timerTask = new TimerTask() { // retransmit
                     @Override
                     public void run() {
-                        if (dataChannel.isConnected()) {
+                        if (dataChannel.isConnected() && !acked) {
                             System.out.println("\n" + seqNo + " time out & retransmitted");
                             sendPacketAndStartTimer();
                         }
@@ -90,16 +86,12 @@ public class FTPServer {
                 timer.schedule(timerTask, 1000);
             }
         }
-
         void sendPacketAndStartTimer() {
-//            if (TIMEOUTACKED)
-//                return;
-
             try {
                 timerTask = new TimerTask() { // retransmit
                     @Override
                     public void run() {
-                        if (dataChannel.isConnected()) {
+                        if (dataChannel.isConnected() && !acked) {
                             System.out.println("\n" + seqNo + " time out & retransmitted");
                             sendPacketAndStartTimer();
                         }
@@ -115,37 +107,29 @@ public class FTPServer {
                     dataMessage.position(dataMessage.limit());
                 }
                 timer.schedule(timerTask, 1000);
-            } catch (IllegalStateException ise) {
+            } catch (IllegalStateException ise) { // when the timer is already closed
+                // Do nothing
             } catch (AsynchronousCloseException ace) {
                 System.out.println("Data channel is closed. Drop the delayed packet.");
                 timer.cancel();
-                return;
             } catch (IOException e) {
                 e.printStackTrace();
             }
-
         }
 
         void setDROP() {
             DROP = true;
         }
-
         void setTIMEOUT() {
             TIMEOUT = true;
         }
-
         void setBITERROR() {
             BITERROR = true;
             dataMessage.position(1);
             dataMessage.putShort((short) 0xFFFF);
             dataMessage.position(dataMessage.limit());
         }
-
         void setAcked() {
-            if (TIMEOUT) {
-                TIMEOUT = false;
-                TIMEOUTACKED = true;
-            }
             acked = true;
             timerTask.cancel();
             // print
@@ -155,13 +139,11 @@ public class FTPServer {
         byte getSeqNo() {
             return seqNo;
         }
-
-        boolean isAcked() {
-            return acked;
-        }
-
         ByteBuffer getDataMessage() {
             return dataMessage;
+        }
+        boolean isAcked() {
+            return acked;
         }
     }
 
@@ -338,7 +320,9 @@ public class FTPServer {
     }
 
     static boolean isInRange(int sendBase, int windowSize, byte seqNo) {
-        if (sendBase + windowSize - 1 >= 15
+        if (seqNo < 0 || seqNo >= 15)
+            return false;
+        else if (sendBase + windowSize - 1 >= 15
                 && (sendBase <= seqNo || seqNo <= (sendBase + windowSize - 1) % 15))
             return true;
         else return sendBase + windowSize - 1 < 15 && sendBase <= seqNo && seqNo <= sendBase + windowSize - 1;
@@ -353,9 +337,56 @@ public class FTPServer {
      * {SeqNo(1byte), CHKsum(2bytes), Size(2byte), data chunk(1000bytes)}
      * {SeqNo(1byte), CHKsum(2bytes)}
      */
+    static byte sendOnePacket(SocketChannel dataChannel, FileChannel fileChannel,
+                              byte seqNo, short chkSum, Packet[] packetArr,
+                              ArrayList<Integer> DROP, ArrayList<Integer> TIMEOUT, ArrayList<Integer> BITERROR) throws IOException {
+        short msgSize;
+        ByteBuffer chunk = ByteBuffer.allocate(1000);
+
+        if ((msgSize = (short) fileChannel.read(chunk)) == -1)  // no data to read
+            return -1;
+
+        chunk.flip();
+
+        // make a data message
+        ByteBuffer dataMessage = ByteBuffer.allocate(1005);
+        dataMessage.put(seqNo);
+        dataMessage.putShort(chkSum);
+        dataMessage.putShort(msgSize);
+        dataMessage.put(chunk);
+
+        // buffer a data message
+        packetArr[seqNo] = new Packet(dataChannel, seqNo, dataMessage);
+
+        // set DROP, TIMEOUT, BITERROR
+        for (int i = 0; i < DROP.size(); i++) {
+            if (DROP.get(i) == seqNo + 1) {
+                packetArr[seqNo].setDROP();
+                DROP.remove(i);
+            }
+        }
+        for (int i = 0; i < TIMEOUT.size(); i++) {
+            if (TIMEOUT.get(i) == seqNo + 1) {
+                packetArr[seqNo].setTIMEOUT();
+                TIMEOUT.remove(i);
+            }
+        }
+        for (int i = 0; i < BITERROR.size(); i++) {
+            if (BITERROR.get(i) == seqNo + 1) {
+                packetArr[seqNo].setBITERROR();
+                BITERROR.remove(i);
+            }
+        }
+
+        // send a data message and start a timer
+        packetArr[seqNo].sendPacket();
+
+        seqNo = (byte) ((seqNo + 1) % 15);
+        return seqNo;
+    }
+
     static void sendData(SocketChannel dataChannel, FileChannel fileChannel,
-                         ArrayList<Integer> DROP, ArrayList<Integer> TIMEOUT,
-                         ArrayList<Integer> BITERROR) throws IOException {
+                         ArrayList<Integer> DROP, ArrayList<Integer> TIMEOUT, ArrayList<Integer> BITERROR) throws IOException {
         // For SR
         Packet[] packetArr = new Packet[15];
         final int windowSize = 5;
@@ -363,50 +394,15 @@ public class FTPServer {
 
         // Data Message
         byte seqNo = 0; // next Sequence number
-        short chkSum = 0, msgSize;
-        ByteBuffer chunk = ByteBuffer.allocate(1000);
+        short chkSum = 0;
 
         // init send N Messages
         while (isInRange(sendBase, windowSize, seqNo)) {
-            chunk.clear();
-            if ((msgSize = (short) fileChannel.read(chunk)) == -1)  // no data to read
+
+            if ((seqNo = sendOnePacket(dataChannel, fileChannel, seqNo, chkSum, packetArr, DROP, TIMEOUT, BITERROR)) == -1) {
+                fileChannel.close();
                 break;
-            chunk.flip();
-
-            // make a data message
-            ByteBuffer dataMessage = ByteBuffer.allocate(1005);
-            dataMessage.put(seqNo);
-            dataMessage.putShort(chkSum);
-            dataMessage.putShort(msgSize);
-            dataMessage.put(chunk);
-
-            // buffer a data message
-            packetArr[seqNo] = new Packet(dataChannel, seqNo, dataMessage);
-
-            // set DROP, TIMEOUT, BITERROR
-            for (int i = 0; i < DROP.size(); i++) {
-                if (DROP.get(i) == seqNo + 1) {
-                    packetArr[seqNo].setDROP();
-                    DROP.remove(i);
-                }
             }
-            for (int i = 0; i < TIMEOUT.size(); i++) {
-                if (TIMEOUT.get(i) == seqNo + 1) {
-                    packetArr[seqNo].setTIMEOUT();
-                    TIMEOUT.remove(i);
-                }
-            }
-            for (int i = 0; i < BITERROR.size(); i++) {
-                if (BITERROR.get(i) == seqNo + 1) {
-                    packetArr[seqNo].setBITERROR();
-                    BITERROR.remove(i);
-                }
-            }
-
-            // send a data message and start a timer
-            packetArr[seqNo].sendPacket();
-
-            seqNo = (byte) ((seqNo + 1) % 15);
         }
         System.out.println();
 
@@ -443,50 +439,13 @@ public class FTPServer {
                 }
                 // send remains
                 while (isInRange(sendBase, windowSize, seqNo)) {
-                    chunk.clear();
-                    if ((msgSize = (short) fileChannel.read(chunk)) == -1)
+                    if ((seqNo = sendOnePacket(dataChannel, fileChannel, seqNo, chkSum, packetArr, DROP, TIMEOUT, BITERROR)) == -1) {
+                        fileChannel.close();
                         break;
-                    chunk.flip();
-
-                    // make a data message
-                    ByteBuffer dataMessage = ByteBuffer.allocate(1005);
-                    dataMessage.put(seqNo);
-                    dataMessage.putShort(chkSum);
-                    dataMessage.putShort(msgSize);
-                    dataMessage.put(chunk);
-
-                    // buffer a data message
-                    packetArr[seqNo] = new Packet(dataChannel, seqNo, dataMessage);
-
-                    // set DROP, TIMEOUT, BITERROR
-//            System.out.println("set DROP, TIMEOUT, BITERROR");
-                    for (int i = 0; i < DROP.size(); i++) {
-                        if (DROP.get(i) - 1 == seqNo) {
-                            packetArr[seqNo].setDROP();
-                            DROP.remove(i);
-                        }
                     }
-                    for (int i = 0; i < TIMEOUT.size(); i++) {
-                        if (TIMEOUT.get(i) - 1 == seqNo) {
-                            packetArr[seqNo].setTIMEOUT();
-                            TIMEOUT.remove(i);
-                        }
-                    }
-                    for (int i = 0; i < BITERROR.size(); i++) {
-                        if (BITERROR.get(i) - 1 == seqNo) {
-                            packetArr[seqNo].setBITERROR();
-                            BITERROR.remove(i);
-                        }
-                    }
-
-                    // send a data message and start a timer
-//                    System.out.println("send a data message " + seqNo);
                     System.out.println();
-                    packetArr[seqNo].sendPacket();
-
-                    seqNo = (byte) ((seqNo + 1) % 15);
                 }
-            } else if (chkSum == 0)
+            } else if (ackChkSum == 0)
                 System.out.println("delayed " + ack + " acked,");
         }
     }
@@ -496,7 +455,7 @@ public class FTPServer {
         // For SR
         Packet[] packetArr = new Packet[15];
         final int windowSize = 5;
-        int sendBase = 0;
+        int receiveBase = 0;
 
         // Data Message
         byte seqNo;
@@ -516,7 +475,7 @@ public class FTPServer {
             dataMessage.limit(dataMessage.position() + msgSize);
 
             // no bitError & in range
-            if (chkSum == 0 && isInRange(sendBase, windowSize, seqNo)) {
+            if (chkSum == 0 && isInRange(receiveBase, windowSize, seqNo)) {
                 // send a control message
                 ByteBuffer controlMessage = ByteBuffer.allocate(3);
                 controlMessage.put(seqNo);
@@ -527,16 +486,16 @@ public class FTPServer {
                 controlMessage.clear();
 
                 // in order
-                if (sendBase == seqNo) {
+                if (receiveBase == seqNo) {
                     // deliver a new packet to file
                     fileChannel.write(dataMessage);
-                    sendBase = (sendBase + 1) % 15;
+                    receiveBase = (receiveBase + 1) % 15;
 
                     // deliver buffered
-                    while (packetArr[sendBase] != null) {
-                        fileChannel.write(packetArr[sendBase].getDataMessage());
-                        packetArr[sendBase] = null;
-                        sendBase = (sendBase + 1) % 15;
+                    while (packetArr[receiveBase] != null) {
+                        fileChannel.write(packetArr[receiveBase].getDataMessage());
+                        packetArr[receiveBase] = null;
+                        receiveBase = (receiveBase + 1) % 15;
                     }
                 } else {
                     // out of order -> buffer
@@ -544,7 +503,7 @@ public class FTPServer {
                 }
             }
             // no bitError & last range
-            else if (chkSum == 0 && isInRange(sendBase - windowSize, windowSize, seqNo)) {
+            else if (chkSum == 0 && isInRange(receiveBase - windowSize, windowSize, seqNo)) {
                 // send an ack
                 ByteBuffer controlMessage = ByteBuffer.allocate(3);
                 controlMessage.put(seqNo);

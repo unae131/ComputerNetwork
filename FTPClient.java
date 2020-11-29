@@ -110,7 +110,8 @@ public class FTPClient {
         if (commandChannel.isConnected())
             System.out.println("Control channel is connected to " + serverIP.getHostAddress() + " " + cmdPort
                     + "\nEnter commands (CD <dir>, LIST [dir], GET [file], PUT [file], QUIT)" +
-                    "\nPacket control commands (DROP, TIMEOUT, BITERROR, SERVER DROP, SERVER TIMEOUT, SERVER BITERROR)");
+                    "\nPacket control : (DROP / TIMEOUT / BITERROR) [R#, R# ...]" +
+                    "\nServer packet control : SERVER (DROP / TIMEOUT / BITERROR) [R#, R# ...]");
         else {
             System.out.println("Failed connection");
             commandChannel.close();
@@ -126,59 +127,103 @@ public class FTPClient {
             System.out.print(">> ");
             request = inFromUser.readLine();
             String[] cmds = request.split(" ", 2);
-            cmds[0] = cmds[0].toUpperCase();
 
             // request
-            if (cmds[0].equals("PUT")) { // PUT
-                if (cmds.length < 2) {
-                    System.out.println("Please enter 'PUT [fileName]'");
+            switch (cmds[0]) {
+                case "PUT":  // PUT
+                    if (cmds.length < 2) {
+                        System.out.println("Please enter 'PUT [fileName]'");
+                        continue;
+                    }
+
+                    file = new File(cmds[1]);
+                    if (!file.exists()) {
+                        System.out.println("Such file does not exist!");
+                        continue;
+                    }
+
+                    if (file.isDirectory()) {
+                        System.out.println("It is a directory! You can only send a file.");
+                        continue;
+                    }
+
+                    putFilePath = file.getCanonicalPath();
+                    requestBuffer = charset.encode(request + "\n" + file.length() + "\n");
+                    commandChannel.write(requestBuffer);
+
+                    break;
+                case "DROP":
+                    if (cmds.length == 1) {
+                        System.out.println("Arguments are needed! DROP / TIMEOUT / BITERROR [R#, R#...]");
+                        continue;
+                    }
+                    String[] args = cmds[1].split(",");
+                    for (String arg : args) {
+                        DROP.add(Integer.parseInt(arg.trim().substring(1)));
+                    }
                     continue;
-                }
-
-                file = new File(cmds[1]);
-                if (!file.exists()) {
-                    System.out.println("Such file does not exist!");
+                case "TIMEOUT":
+                    if (cmds.length == 1) {
+                        System.out.println("Arguments are needed! DROP / TIMEOUT / BITERROR [R#, R#...]");
+                        continue;
+                    }
+                    args = cmds[1].split(",");
+                    for (String arg : args) {
+                        TIMEOUT.add(Integer.parseInt(arg.trim().substring(1)));
+                    }
                     continue;
-                }
-
-                if (file.isDirectory()) {
-                    System.out.println("It is a directory! You can only send a file.");
+                case "BITERROR":
+                    if (cmds.length == 1) {
+                        System.out.println("Arguments are needed! DROP / TIMEOUT / BITERROR [R#, R#...]");
+                        continue;
+                    }
+                    args = cmds[1].split(",");
+                    for (String arg : args) {
+                        BITERROR.add(Integer.parseInt(arg.trim().substring(1)));
+                    }
                     continue;
-                }
-
-                putFilePath = file.getCanonicalPath();
-                requestBuffer = charset.encode(request + "\n" + file.length() + "\n");
-                commandChannel.write(requestBuffer);
-
-            } else if (cmds[0].equals("DROP")) {
-                String[] args = cmds[1].split(",");
-                for (String arg : args) {
-                    DROP.add(Integer.parseInt(arg.trim().substring(1)));
-                }
-                continue;
-            } else if (cmds[0].equals("TIMEOUT")) {
-                String[] args = cmds[1].split(",");
-                for (String arg : args) {
-                    TIMEOUT.add(Integer.parseInt(arg.trim().substring(1)));
-                }
-                continue;
-            } else if (cmds[0].equals("BITERROR")) {
-                String[] args = cmds[1].split(",");
-                for (String arg : args) {
-                    BITERROR.add(Integer.parseInt(arg.trim().substring(1)));
-                }
-                continue;
-            } else { // other commands
-                requestBuffer = charset.encode(request);
-                commandChannel.write(requestBuffer);
-                // quit
-                if (request.toUpperCase().equals("QUIT")) {
-                    commandChannel.shutdownInput();
-                    commandChannel.shutdownOutput();
-                    inFromUser.close();
-                    commandChannel.close();
-                    return;
-                }
+                case "SERVER":
+                    if (cmds.length < 2) {
+                        System.out.println("Arguments are needed! SERVER DROP / TIMEOUT / BITERROR [R#, R#...]");
+                        continue;
+                    }
+                    if (cmds[1].split(" ", 2).length == 2) {
+                        String[] packets = cmds[1].split(" ", 2)[1].split(",");
+                        boolean error = false;
+                        for (String p : packets) {
+                            p = p.trim();
+                            if (p.length() == 0 || p.charAt(0) != 'R') {
+                                System.out.println("Arguments are needed! SERVER DROP / TIMEOUT / BITERROR [R#, R#...]");
+                                error = true;
+                                break;
+                            }
+                            try {
+                                Integer.parseInt(p.substring(1));
+                            } catch (NumberFormatException nfe) {
+                                System.out.println("Arguments are needed! SERVER DROP / TIMEOUT / BITERROR [R#, R#...]. # is an integer");
+                                error = true;
+                                break;
+                            }
+                        }
+                        if (error)
+                            continue;
+                    } else {
+                        System.out.println("Arguments are needed! SERVER DROP / TIMEOUT / BITERROR [R#, R#...]");
+                        continue;
+                    }
+                default:  // other commands
+                    requestBuffer = charset.encode(request);
+                    commandChannel.write(requestBuffer);
+                    // quit
+                    if (request.equals("QUIT")) {
+                        commandChannel.shutdownInput();
+                        commandChannel.shutdownOutput();
+                        inFromUser.close();
+                        commandChannel.close();
+                        System.exit(0);
+                        return;
+                    }
+                    break;
             }
 
             // read response size
